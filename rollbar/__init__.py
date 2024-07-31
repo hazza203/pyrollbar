@@ -331,9 +331,9 @@ _LAST_RESPONSE_STATUS = None
 # Set in init()
 _transforms = []
 _serialize_transform = None
+_connection_error_event = False
 
 _initialized = False
-_connection_error_state = False
 
 from rollbar.lib.transforms.scrub_redact import REDACT_REF
 
@@ -361,7 +361,7 @@ def init(access_token, environment='production', scrub_fields=None, url_fields=N
                  'staging', 'yourname'
     **kw: provided keyword arguments will override keys in SETTINGS.
     """
-    global SETTINGS, agent_log, _initialized, _transforms, _serialize_transform, _threads, _connection_error_state
+    global SETTINGS, agent_log, _initialized, _transforms, _serialize_transform, _threads, _connection_error_event
 
     if scrub_fields is not None:
        SETTINGS['scrub_fields'] = list(scrub_fields)
@@ -437,7 +437,7 @@ def init(access_token, environment='production', scrub_fields=None, url_fields=N
     events.reset()
     filters.add_builtin_filters(SETTINGS)
 
-    _connection_error_state = False
+    _connection_error_event = threading.Event()
     _initialized = True
 
 
@@ -549,7 +549,7 @@ def send_payload(payload, access_token):
 
     payload_str = _serialize_payload(payload)
     if handler == 'blocking':
-        _send_payload(payload_str, access_token)
+        _send_payload(payload_str, access_token, _connection_error_event)
     elif handler == 'agent':
         agent_log.error(payload_str)
     elif handler == 'tornado':
@@ -1489,18 +1489,17 @@ def _serialize_payload(payload):
     return json.dumps(payload, default=defaultJSONEncode)
 
 
-def _send_payload(payload_str, access_token):
+def _send_payload(payload_str, access_token, _connection_error_event):
     try:
         _post_api('item/', payload_str, access_token=access_token)
-        if _connection_error_state:
-            log.debug("Connection resumed.")
-        _connection_error_state = False
-    except ConnectionError as e:
-        if not _connection_error_state:
+        if _connection_error_event.is_set():
+            log.warning("Connection resumed.")
+        _connection_error_event.clear()
+    except requests.ConnectionError as e:
+        if not _connection_error_event.is_set():
             log.exception('ConnectionError while posting item %r', e)
-            log.debug("Connection is not stable. The above error will only log once, until connection has stabalized.")
-        
-        _connection_error_state = True
+            log.warning("Connection is not stable. The above error will only log once, until connection has stabalized.")
+            _connection_error_event.set()
     except Exception as e:
         log.exception('Exception while posting item %r', e)
     try:
@@ -1511,7 +1510,7 @@ def _send_payload(payload_str, access_token):
 
 
 def _send_payload_thread(payload_str, access_token):
-    thread = threading.Thread(target=_send_payload, args=(payload_str, access_token))
+    thread = threading.Thread(target=_send_payload, args=(payload_str, access_token, _connection_error_event))
     _threads.put(thread)
     thread.start()
 
