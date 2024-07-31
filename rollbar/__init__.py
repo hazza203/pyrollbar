@@ -333,6 +333,7 @@ _transforms = []
 _serialize_transform = None
 
 _initialized = False
+_connection_error_state = False
 
 from rollbar.lib.transforms.scrub_redact import REDACT_REF
 
@@ -360,7 +361,7 @@ def init(access_token, environment='production', scrub_fields=None, url_fields=N
                  'staging', 'yourname'
     **kw: provided keyword arguments will override keys in SETTINGS.
     """
-    global SETTINGS, agent_log, _initialized, _transforms, _serialize_transform, _threads
+    global SETTINGS, agent_log, _initialized, _transforms, _serialize_transform, _threads, _connection_error_state
 
     if scrub_fields is not None:
        SETTINGS['scrub_fields'] = list(scrub_fields)
@@ -1490,6 +1491,15 @@ def _serialize_payload(payload):
 def _send_payload(payload_str, access_token):
     try:
         _post_api('item/', payload_str, access_token=access_token)
+        if _connection_error_state:
+            log.debug("Connection resumed.")
+        _connection_error_state = False
+    except ConnectionError as e:
+        if not _connection_error_state:
+            log.exception('ConnectionError while posting item %r', e)
+            log.debug("Connection is not stable. The above error will only log once, until connection has stabalized.")
+        
+        _connection_error_state = True
     except Exception as e:
         log.exception('Exception while posting item %r', e)
     try:
