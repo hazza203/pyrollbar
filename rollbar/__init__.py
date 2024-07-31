@@ -437,6 +437,7 @@ def init(access_token, environment='production', scrub_fields=None, url_fields=N
     events.reset()
     filters.add_builtin_filters(SETTINGS)
 
+    _connection_error_state = False
     _initialized = True
 
 
