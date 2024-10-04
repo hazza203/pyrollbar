@@ -16,6 +16,7 @@ import unittest
 import rollbar
 from rollbar.lib._async import AsyncMock
 from rollbar.test import BaseTest
+from rollbar.test.utils import get_public_attrs
 
 ALLOWED_PYTHON_VERSION = sys.version_info >= (3, 6)
 
@@ -152,6 +153,7 @@ class ReporterMiddlewareTest(BaseTest):
 
         app = FastAPI()
         app.add_middleware(ReporterMiddleware)
+        app.build_middleware_stack()
 
         rollbar.report_exc_info()
 
@@ -272,10 +274,10 @@ class ReporterMiddlewareTest(BaseTest):
             'client': ['testclient', 50000],
             'headers': [
                 (b'host', b'testserver'),
-                (b'user-agent', b'testclient'),
-                (b'accept-encoding', b'gzip, deflate'),
                 (b'accept', b'*/*'),
+                (b'accept-encoding', b'gzip, deflate'),
                 (b'connection', b'keep-alive'),
+                (b'user-agent', b'testclient'),
             ],
             'http_version': '1.1',
             'method': 'GET',
@@ -300,7 +302,7 @@ class ReporterMiddlewareTest(BaseTest):
         store_current_request.assert_called_once()
 
         scope = store_current_request.call_args[0][0]
-        self.assertDictContainsSubset(expected_scope, scope)
+        self.assertEqual(scope, {**expected_scope, **scope})
 
     @unittest.skipUnless(
         sys.version_info >= (3, 6), 'Global request access is supported in Python 3.6+'
@@ -324,7 +326,7 @@ class ReporterMiddlewareTest(BaseTest):
         async def read_root(original_request: Request):
             request = get_current_request()
 
-            self.assertEqual(request, original_request)
+            self.assertEqual(get_public_attrs(request), get_public_attrs(original_request))
 
         client = TestClient(app)
         client.get('/')
