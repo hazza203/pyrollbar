@@ -6,6 +6,7 @@ import threading
 import uuid
 
 import sys
+from collections import namedtuple
 
 try:
     from StringIO import StringIO
@@ -74,18 +75,21 @@ class RollbarTest(BaseTest):
         self.assertIn('argv', server_data)
         self.assertNotIn('branch', server_data)
         self.assertNotIn('root', server_data)
+        self.assertGreater(len(server_data['host']), 2)
 
+        rollbar.SETTINGS['host'] = 'test-host'
         rollbar.SETTINGS['branch'] = 'master'
         rollbar.SETTINGS['root'] = '/home/test/'
 
         server_data = rollbar._build_server_data()
 
-        self.assertIn('host', server_data)
         self.assertIn('argv', server_data)
+        self.assertEqual(server_data['host'], 'test-host')
         self.assertEqual(server_data['branch'], 'master')
         self.assertEqual(server_data['root'], '/home/test/')
 
     def test_wsgi_request_data(self):
+        rollbar.SETTINGS['include_request_body'] = True
         request = {
             'CONTENT_LENGTH': str(len('body body body')),
             'CONTENT_TYPE': '',
@@ -117,6 +121,20 @@ class RollbarTest(BaseTest):
         self.assertEqual(data['body'], 'body body body')
         self.assertDictEqual(data['GET'], {'format': 'json', 'param1': 'value1', 'param2': 'value2'})
         self.assertDictEqual(data['headers'], {'Connection': 'close', 'Host': 'example.com', 'User-Agent': 'Agent'})
+
+    def test_wsgi_request_data_no_body(self):
+        rollbar.SETTINGS['include_request_body'] = False
+        request = {
+            'CONTENT_LENGTH': str(len('body body body')),
+            'REMOTE_ADDR': '127.0.0.1',
+            'SERVER_NAME': 'example.com',
+            'SERVER_PORT': '80',
+            'wsgi.input': StringIO('body body body'),
+            'wsgi.url_scheme': 'http',
+        }
+        data = rollbar._build_wsgi_request_data(request)
+        self.assertNotIn('body', data)
+        rollbar.SETTINGS['include_request_body'] = True
 
     def test_starlette_request_data(self):
         try:
@@ -1448,6 +1466,29 @@ class RollbarTest(BaseTest):
         self.assertEqual(undecodable_message, payload['data']['body']['trace']['frames'][-1]['locals']['_invalid'])
 
     @mock.patch('rollbar.send_payload')
+    def test_scrub_namedtuple(self, send_payload):
+
+        SomeTuple = namedtuple('SomeTuple', ['password', 'some_field'])
+
+        def _raise():
+            Data = SomeTuple(password='clear_text', some_field='some_field')
+
+            password = 'sensitive'
+            raise Exception((Data, password))
+
+        try:
+            _raise()
+        except:
+            rollbar.report_exc_info()
+
+        self.assertEqual(send_payload.called, True)
+
+        payload = send_payload.call_args[0][0]
+
+        self.assertRegex(payload['data']['body']['trace']['frames'][-1]['locals']['password'], r'\*+')
+        self.assertRegex(payload['data']['body']['trace']['frames'][-1]['locals']['Data'], 'password=\'\*+\'')
+
+    @mock.patch('rollbar.send_payload')
     def test_scrub_nans(self, send_payload):
         def _raise():
             infinity = float('Inf')
@@ -1555,7 +1596,7 @@ class RollbarTest(BaseTest):
 
         self.assertEqual(1, len(payload['data']['body']['trace']['frames'][-1]['argspec']))
         self.assertEqual('large', payload['data']['body']['trace']['frames'][-1]['argspec'][0])
-        self.assertEqual("'###############################################...################################################'",
+        self.assertEqual("################################################...#################################################",
                          payload['data']['body']['trace']['frames'][-1]['locals']['large'])
 
     @mock.patch('rollbar.send_payload')
@@ -1586,12 +1627,12 @@ class RollbarTest(BaseTest):
 
         self.assertEqual('large', payload['data']['body']['trace']['frames'][-1]['argspec'][0])
         self.assertTrue(
-            ("['hi', 'hi', 'hi', 'hi', 'hi', 'hi', 'hi', 'hi', 'hi', 'hi', ...]" ==
+            (['hi', 'hi', 'hi', 'hi', 'hi', 'hi', 'hi', 'hi', 'hi', 'hi', '...'] ==
                 payload['data']['body']['trace']['frames'][-1]['argspec'][0])
 
             or
 
-            ("['hi', 'hi', 'hi', 'hi', 'hi', 'hi', 'hi', 'hi', 'hi', 'hi', ...]" ==
+            (['hi', 'hi', 'hi', 'hi', 'hi', 'hi', 'hi', 'hi', 'hi', 'hi', '...'] ==
                     payload['data']['body']['trace']['frames'][0]['locals']['xlarge']))
 
 
